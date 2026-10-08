@@ -57,11 +57,13 @@ export function buildSteps(events) {
   let lastAction = null; // last user-action step (for attaching consequences)
   let lastActionT = -1e9;
 
-  const push = (s) => { s.id = steps.length + 1; s.page = { ...page }; steps.push(s); return s; };
+  let curT = 0;
+  const push = (s) => { s.id = steps.length + 1; s.t = curT; s.page = { ...page }; steps.push(s); return s; };
   const action = (s, t) => { const st = push(s); lastAction = st; lastActionT = t; return st; };
 
   for (let i = 0; i < events.length; i++) {
     const e = events[i];
+    curT = e.t;
     const next = events.slice(i + 1, i + 6);
     if (e.title && e.top) page.title = e.title;
 
@@ -156,7 +158,11 @@ export function buildSteps(events) {
         if (e.rtype !== 'xmlhttprequest' || !lastAction || e.t - lastActionT > 6000) break;
         const sig = `${e.method} ${pathOf(e.url)}`;
         const net = (lastAction.network ||= []);
-        if (!net.some((n) => n.sig === sig) && net.length < 12) net.push({ sig, status: e.status });
+        let params = [];
+        try { params = [...new URL(e.url).searchParams.keys()].slice(0, 12); } catch { /* */ }
+        const had = net.find((n) => n.sig === sig);
+        if (had) had.params = [...new Set([...(had.params || []), ...params])];
+        else if (net.length < 12) net.push({ sig, status: e.status, params, example: String(e.url).slice(0, 300) });
         break;
       }
       case 'tab_created':
@@ -228,7 +234,7 @@ export function buildPlan(doc) {
       goal: `在这个页面上：${seg.map(brief).join('；')}${until === 'confirm' ? '。只做这些，不要提交/发送' : ''}`,
       values,
       valueHints: Object.fromEntries(values.map((k) => [k, inputs[k]?.hint || k])),
-      hints: [...(doc.task ? [`整体任务：${doc.task}（本段只是其中一步）`] : []), `上次的做法：${seg.map(brief).join(' → ')}`],
+      hints: [...(doc.task ? [`整体任务：${doc.task}（本段只是其中一步）`] : []), `上次的做法：${seg.map(brief).join(' → ')}`, ...seg.flatMap((s) => (s.say || []).map((t) => `演示者在「${brief(s)}」时说：${t}`))],
       maxSteps: Math.max(6, seg.length * 2 + 2),
       expect: seg.filter((s) => ['fill', 'check', 'select', 'click'].includes(s.kind)).map((s) => ({ op: s.kind === 'check' ? 'click' : s.kind, name: s.target?.name || s.target?.text || '' })).filter((e) => e.name),
       ...(until ? { until } : {}),

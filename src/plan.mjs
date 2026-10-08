@@ -44,11 +44,11 @@ function resolveParams(plan, given) {
   return params;
 }
 
-export async function runPlan(file, { params: given = {}, fresh = true } = {}) {
+export async function runPlan(file, { params: given = {}, fresh = true, trial = false } = {}) {
   const plan = loadPlan(file);
   const params = resolveParams(plan, given);
   const id = `${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}-${(plan.name || 'plan').replace(/[^\w\u4e00-\u9fa5-]+/g, '-').slice(0, 30)}`;
-  const state = { id, file: path.resolve(file), params, index: 0, status: 'running', stages: plan.stages.map((s) => ({ id: s.id, type: s.type, status: 'pending' })), started: Date.now() };
+  const state = { id, file: path.resolve(file), params, index: 0, status: 'running', stages: plan.stages.map((s) => ({ id: s.id, type: s.type, status: 'pending' })), started: Date.now(), trial };
   if (fresh) { const s = cu.newSession(); s.planRun = id; cu.save(s); }
   return drive(plan, state);
 }
@@ -87,7 +87,19 @@ async function drive(plan, state) {
     persist(state);
     console.log(`\n${color.cyan(`[${state.index + 1}/${plan.stages.length}] ${stage.id} · ${stage.type}`)} ${color.dim(stage.goal || stage.target || stage.url || stage.message || '')}`);
     let res;
-    try { res = await runStage(stage, state); } catch (e) { res = { status: 'fail', why: String(e.message || e) }; }
+    // Supervised trial: stop before every plan-approved action so the human
+    // can watch the first run; \`resume\` (without --skip) then performs it.
+    // A stage whose purpose is already met on this screen is skipped (e.g. "show all rows on one page").
+    let pre = null;
+    if (stage.skipIf && !rec.confirmed) {
+      pre = await runCheck(stage.skipIf, state).catch(() => null);
+      if (!pre?.ok) { await sleep(1500); pre = await runCheck(stage.skipIf, state).catch(() => null); }
+    }
+    if (pre?.ok) res = { status: 'done', why: `已满足，跳过：${pre.why}` };
+    else if (state.trial && (stage.type === 'act' || stage.trialStop) && !rec.confirmed) {
+      rec.confirmed = true;
+      res = { status: 'human', why: `试跑：下一步要${stage.type === 'act' ? ` ${stage.op || 'click'}「${fill(stage.target, state.params)}」` : `「${fill(stage.goal, state.params)}」`}。请用户确认后 \`replay plan resume\`（会执行这一步）` };
+    } else try { res = await runStage(stage, state); } catch (e) { res = { status: 'fail', why: String(e.message || e) }; }
     rec.status = res.status;
     rec.why = res.why;
     rec.ms = Date.now() - t0;
@@ -102,7 +114,7 @@ async function drive(plan, state) {
     if (res.view) console.log(formatView(res.view));
     const how = {
       escalate: `交给指挥：处理后 \`replay plan resume\`（重跑本段）或 \`replay plan resume --skip\`（已手动完成本段）。可用 replay look / act 操作当前会话。`,
-      human: `需要人：${stage.message || ''}。完成后 \`replay plan resume --skip\`。`,
+      human: (stage.type === 'act' || stage.trialStop) && state.trial ? '' : `需要人：${stage.message || ''}。完成后 \`replay plan resume --skip\`。`,
       fail: `本段失败：修正 plan 或现场后 \`replay plan resume\`。`,
     }[res.status] || '';
     console.log(`  ${res.status === 'human' ? WARN : BAD} ${res.why}\n  ${color.dim(how)}\n  ${color.dim(`状态：${dir}/state.json`)}`);
@@ -151,12 +163,15 @@ async function runStage(stage, state) {
       const t0 = Date.now();
       // Values stay out of the goal text: Jev sees the key, matches it to a field, and the runner types the value.
       const goalText = String(stage.goal).replace(/\{\{(\w+)\}\}/g, (_, k) => `provided value "${k}"`);
-      const r = await cu.runDo(s, { goal: goalText, values, hints: (stage.hints || []).map((h) => String(h).replace(/\{\{(\w+)\}\}/g, (_, k) => `"${k}"`)), maxSteps: stage.maxSteps || 15, expect: stage.expect || null });
+      const r = await cu.runDo(s, { goal: goalText, values, hints: (stage.hints || []).map((h) => String(h).replace(/\{\{(\w+)\}\}/g, (_, k) => `"${k}"`)), maxSteps: stage.maxSteps || 15, expect: stage.expect || null, untilValues: stage.until === 'values' });
       cu.printDo({ ...r, view: null }, t0);
       if (r.status === 'done') {
         if (stage.check) { const c = await runCheck(stage.check, state); if (!c.ok) return { status: 'escalate', why: `Jev 说完成，但核验没过：${c.why}`, view: r.view }; return { status: 'done', why: `${r.why}；核验：${c.why}` }; }
         return { status: 'done', why: r.why };
       }
+      // A download often leaves the page unchanged, so Jev cannot see "done";
+      // the independent check decides.
+      if (stage.check?.file) { const c = await runCheck(stage.check, state); if (c.ok) return { status: 'done', why: `核验：${c.why}（Jev 未判完成：${r.why}）` }; }
       // Escalation with an explicit stage end condition: the next stage may be an
       // approved act that is exactly what Jev was waiting for confirmation on.
       if (stage.until === 'confirm' && /需确认/.test(r.why)) return { status: 'done', why: `已推进到需确认的动作：${r.why}` };
@@ -230,7 +245,7 @@ export async function runCheck(check, state) {
   const P = state.params;
   const why = [];
   let obs = null;
-  const need = check.url || check.text || check.jev;
+  const need = check.url || check.text || check.jev || check.rows === 'page' || check.allOnPage;
   if (need) {
     const s = session();
     ({ io: { obs } } = await cu.observeAndJudge(s));
@@ -246,6 +261,12 @@ export async function runCheck(check, state) {
     if (!hay.includes(t)) return { ok: false, why: `页面里没有「${t}」` };
     why.push(`含「${t}」`);
   }
+  if (check.allOnPage) {
+    const m = hay.match(/\b(\d[\d,]*)\s+to\s+(\d[\d,]*)\s+of\s+(\d[\d,]*)/i);
+    const n = (x) => Number(String(x).replace(/,/g, ''));
+    if (!m || n(m[1]) !== 1 || n(m[2]) !== n(m[3])) return { ok: false, why: m ? `列表只显示了 ${m[0]}` : '页面上没找到"第几到第几条，共几条"' };
+    why.push(`一页已显示全部（${m[0]}）`);
+  }
   if (check.jev) {
     const r = await askJev({ screen: obs.where, page_text: hay.slice(0, 2500) }, { ok: { type: 'noul', instructions: fill(check.jev, P) } });
     const p = r.answers?.ok?.noul ?? 0;
@@ -256,10 +277,37 @@ export async function runCheck(check, state) {
     const g = expandHome(fill(check.file, P));
     const dir = path.dirname(g);
     const re = glob2re(path.basename(g));
-    const since = state.stages[state.index]?.startedAt || state.started;
+    // A standalone check verifies what the previous stage produced.
+    const cur = state.stages[state.index];
+    const since = (cur?.type === 'check' ? state.stages[state.index - 1]?.startedAt : cur?.startedAt) || state.started;
     const hit = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => re.test(f)).map((f) => ({ f, st: fs.statSync(path.join(dir, f)) })).filter((x) => x.st.mtimeMs >= since - 1000 && x.st.size > 0).sort((a, b) => b.st.mtimeMs - a.st.mtimeMs)[0];
     if (!hit) return { ok: false, why: `${g} 没有本段之后产生的非空文件` };
     why.push(`文件 ${hit.f}（${hit.st.size} 字节）`);
+    // Row count: a number, or 'page' = the total the list page reports
+    // ("Showing 1 to 20 of 2108 rows", "共 2108 条"). Catches page-only exports.
+    if (check.rows != null && /\.(csv|tsv|txt)$/i.test(hit.f)) {
+      // CSV-aware record count (quoted fields may contain newlines).
+      const txt = fs.readFileSync(path.join(dir, hit.f), 'utf8');
+      // Rows with an empty first column (export footers / totals) are counted apart.
+      let recs = 0, foot = 0, inQ = false, any = false, start = true, firstEmpty = false;
+      for (let i = 0; i < txt.length; i++) {
+        const c = txt[i];
+        if (start && c !== '\uFEFF') { firstEmpty = c === ',' || c === ';' || c === '\t'; start = false; }
+        if (c === '"') inQ = !inQ;
+        else if (c === '\n' && !inQ) { if (any) { if (firstEmpty && recs > 0) foot++; else recs++; } any = false; start = true; continue; }
+        if (!/[\s,;"\t\uFEFF]/.test(c)) any = true;
+      }
+      if (any) { if (firstEmpty && recs > 0) foot++; else recs++; }
+      const lines = recs - 1;
+      let want = Number(fill(String(check.rows), P));
+      if (check.rows === 'page') {
+        const m = hay.match(/\bof\s+([\d,]+)\s+(rows|entries|items|records|results)/i) || hay.match(/共\s*([\d,]+)\s*(条|项|行|个)/);
+        want = m ? Number(m[1].replace(/,/g, '')) : NaN;
+        if (!m) why.push('页面上没找到总条数，行数未核验');
+      }
+      if (Number.isFinite(want) && lines < want) return { ok: false, why: `文件 ${hit.f} 只有 ${lines} 行数据，页面/要求是 ${want} 行——可能只导出了当前页` };
+      if (Number.isFinite(want)) why.push(`${lines} 行${foot ? `（另有 ${foot} 行合计/空行）` : ''}（要求 ≥ ${want}）`);
+    }
   }
   return { ok: true, why: why.join('；') || '无条件' };
 }

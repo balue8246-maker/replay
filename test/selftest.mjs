@@ -114,6 +114,66 @@ await test('offline: recording → plan.json (do segments, approved act, check)'
   assert.equal(plan.inputs.input_1.default, 'A');
 });
 
+await test('offline: teach — narration, fumbles, spoken evidence → plan', async () => {
+  const T2 = await import('../src/teach.mjs');
+  const L = T2.startLesson('拉品牌清单', { url: 'https://inv.example.com/' });
+  const r = await record({ name: 'teach', task: '拉品牌清单', quiet: true });
+  const ev = [
+    { source: 'nav', type: 'navigate', url: 'https://inv.example.com/list', transition: 'typed' },
+    { source: 'page', type: 'narration', text: '搜品牌，这次是戴尔，每次品牌不一样', via: 'typed' },
+    { source: 'page', type: 'input', target: T('searchbox', 'Search', { tag: 'input', css: 'input.s' }), value: 'Dell' },
+    { source: 'page', type: 'click', target: T('button', '20') },
+    { source: 'page', type: 'click', target: T('button', '20') },
+    { source: 'page', type: 'click', target: T('link', '100', { tag: 'a', css: 'a.p100' }) },
+    { source: 'page', type: 'click', target: T('button', 'Export data') },
+    { source: 'download', type: 'download_started', url: 'https://inv.example.com/x.csv', filename: '/tmp/d/export.csv' },
+    { source: 'download', type: 'download_complete', filename: '/tmp/d/export.csv', bytes: 99 },
+    { source: 'page', type: 'narration', text: '文件行数和页面上的总条数一样就对了', via: 'typed' },
+  ];
+  for (const e of ev) { assert.equal((await post('/event', e)).status, 200); await new Promise((res) => setTimeout(res, 700)); }
+  await stopRecording();
+  const sess = await r.done;
+  const U = T2.understand(L, sess);
+  const md = fs.readFileSync(path.join(T2.lessonDir(L.id), 'understanding.md'), 'utf8');
+  assert.match(md, /每次会变/, 'spoken "每次不一样" makes the search a variable');
+  assert.ok(U.mistakeGroups.some((g) => g.length >= 1), 'repeated clicks flagged as fumbles');
+  assert.ok(U.evidenceSaid, 'spoken evidence picked up');
+  assert.ok(!U.questions.some((q) => q.id === 'evidence'), 'no evidence question when it was said');
+  const L2 = T2.loadLesson(L.id);
+  L2.answers = { ...(L2.answers || {}), [`m_${U.mistakeGroups[0][0]}`]: '是', name_input_1: 'brand 品牌' };
+  T2.saveLesson(L2);
+  const plan = JSON.parse(fs.readFileSync(T2.compile(T2.loadLesson(L.id)).plan, 'utf8'));
+  assert.ok(plan.inputs.brand, 'renamed param');
+  const st = plan.stages;
+  assert.ok(st.some((x) => x.type === 'do' && /\{\{brand\}\}/.test(x.goal)), 'value stays a placeholder');
+  assert.ok(st.some((x) => x.check?.rows === 'page' || (x.type === 'check' && x.rows === 'page')), 'row-count evidence becomes a rows:page check');
+  assert.ok(st.some((x) => x.trialStop), 'trial stops before the producing stage');
+});
+
+await test('offline: rows check counts CSV records, not footers or quoted newlines', async () => {
+  const { runCheck } = await import('../src/plan.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-rows-'));
+  fs.writeFileSync(path.join(dir, 'a.csv'), '\uFEFF"Tag","Note",Cost\n1,"two\nlines",3\n2,x,4\n,,7\n');
+  const st = { params: {}, stages: [{ type: 'check', startedAt: 0 }], index: 0, started: 0 };
+  const r = await runCheck({ file: path.join(dir, '*.csv'), rows: 2 }, st);
+  assert.equal(r.ok, true, r.why);
+  assert.match(r.why, /2 行（另有 1 行合计/);
+  const bad = await runCheck({ file: path.join(dir, '*.csv'), rows: 3 }, st);
+  assert.equal(bad.ok, false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+await test('offline: explore helpers — templates, export words, manual', async () => {
+  const X = await import('../src/explore-ego.mjs');
+  assert.equal(X.template('https://s.example.com/hardware/123/edit?b=1&a=2'), X.template('https://s.example.com/hardware/987/edit?a=9&b=3'));
+  assert.ok(X.EXPORT.test('Export data') && X.EXPORT.test('导出') && !X.EXPORT.test('Printer Paper'));
+  const { manualMd } = await import('../src/explore.mjs');
+  const pg = { id: 'p1', url: 'https://s.example.com/list', title: 'List', depth: 0, from: null, via: null, headings: ['Assets'], breadcrumb: [], revealed: [], filters: [{ label: 'Status', kind: 'select', region: 'main', options: ['Ready'] }], rowChecks: 20, tables: [{ caption: '', columns: ['Tag', 'Name'] }], total: 'Showing 1 to 20 of 70 rows', apis: ['/api/v1/items'], exports: [{ text: 'Export data', region: 'main', href: null }], changes: ['Create New'], nav: [], tags: { lists: 0.99, filters: 0.9, exportable: 0.97, report: 0.1, form: 0.0, relevant: 0.9 }, template: 'https://s.example.com/list', same: 0 };
+  const md = manualMd({ schema: 'replay-site/1', id: 's', origin: 'https://s.example.com', start: 'https://s.example.com/list', focus: '', pages: [pg], skipped: [], unvisited: [], jevCalls: 1, jevMs: 500, ms: 1000, exploredAt: '2026-10-08T00:00:00Z', notes: [{ at: '2026-10-08T00:00:00Z', text: '只导出当前页' }] });
+  assert.match(md, /Export data/);
+  assert.match(md, /只导出当前页/);
+});
+
 if (process.argv.includes('--ego')) {
   await test('ego: content script captures trusted input in Ego, distill, replay with new param', async () => {
     const r = await record({ name: 'httpbin-form', task: '提交披萨订单表单', quiet: true });

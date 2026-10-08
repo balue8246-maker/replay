@@ -81,7 +81,10 @@ export async function observeWeb(page, { maxDom = 40 } = {}) {
   // excerpt so result pages (JSON, tables, confirmations) can be judged.
   let excerpt = '';
   try { excerpt = await page.evaluate(() => (document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 1200)); } catch {}
-  return { surface: 'web', where: await page.url().catch(() => ''), title: await page.title().catch(() => ''), candidates: cands, texts: textsOf(snap), excerpt, ms: Date.now() - t0 };
+  // REPLAY's own narration box (shown while recording) is not part of the site.
+  const own = /^(打字讲解，回车发送|REPLAY 录制中)/;
+  const mine = cands.filter((c) => !own.test(String(c.name || '').trim()));
+  return { surface: 'web', where: await page.url().catch(() => ''), title: await page.title().catch(() => ''), candidates: mine, texts: textsOf(snap).filter((t) => !own.test(String(t).trim()) && !/^已记下$/.test(String(t).trim())), excerpt, ms: Date.now() - t0 };
 }
 
 function selectorFor(c) {
@@ -102,7 +105,11 @@ export async function actWeb(page, cand, action) {
       else await page.click(sel, { ...to, label: cand?.name?.slice(0, 30) || undefined });
       break;
     case 'dblclick': await page.dblclick(sel, to); break;
-    case 'fill': await page.fill(sel, String(action.value ?? ''), { clearFirst: true, ...to }); break;
+    case 'fill':
+      await page.fill(sel, String(action.value ?? ''), { clearFirst: true, ...to });
+      // A search box usually applies on Enter; nothing else submits on Enter here.
+      if (cand.role === 'searchbox') { await page.press(sel, 'Enter', to).catch(() => {}); await new Promise((r) => setTimeout(r, 1200)); }
+      break;
     case 'select': await page.selectOption(sel, String(action.value ?? ''), to); break;
     case 'press': if (sel) await page.press(sel, action.key, to); else await page.keyboard.press(action.key); break;
     case 'type': await page.keyboard.type(String(action.value ?? '')); break;

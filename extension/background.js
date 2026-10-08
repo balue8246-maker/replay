@@ -72,7 +72,8 @@ async function screenshot(windowId, reason) {
   }
 }
 
-chrome.runtime.onMessage.addListener((msg, sender) => {
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg && msg.__replayStatus) { getStatus().then((s) => sendResponse({ recording: !!s.recording })); return true; }
   if (!msg || !msg.__replay) return;
   const tab = sender.tab || {};
   (async () => {

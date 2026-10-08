@@ -154,6 +154,51 @@
 
   const CLICKABLE = 'button, a, [role="button"], [role="link"], [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"], [role="tab"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="treeitem"], [role="gridcell"], input, select, textarea, summary, label, [onclick], [tabindex]';
 
+  // Typed narration box: shown only while a recording is active (top frame).
+  // Its own events are never recorded as actions.
+  let box = null;
+  const ours = (e) => !!box && !!e.composedPath && e.composedPath().includes(box);
+  function showBox() {
+    if (box || window !== window.top || !document.body) return;
+    box = document.createElement('div');
+    box.setAttribute('data-replay-narration', '');
+    const root = box.attachShadow({ mode: 'closed' });
+    root.innerHTML = `<style>
+      .w{position:fixed;right:16px;bottom:16px;z-index:2147483647;font:13px -apple-system,system-ui,sans-serif;background:#111;color:#fff;border-radius:10px;padding:8px 10px;box-shadow:0 4px 16px rgba(0,0,0,.3);width:300px}
+      .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;opacity:.85}
+      .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#e5484d;margin-right:6px}
+      input{width:100%;box-sizing:border-box;border:0;border-radius:6px;padding:6px 8px;font:inherit}
+      .ok{font-size:12px;color:#8f8;height:14px;margin-top:4px}
+      button{background:none;border:0;color:#aaa;cursor:pointer;font:inherit}
+      .min input,.min .ok{display:none}
+    </style><div class="w"><div class="h"><span><span class="dot"></span>REPLAY 录制中 · 讲讲你在做什么</span><button title="收起">–</button></div>
+    <input placeholder="打字讲解，回车发送（例如：日期每次选上周）"><div class="ok"></div></div>`;
+    const input = root.querySelector('input');
+    const ok = root.querySelector('.ok');
+    root.querySelector('button').addEventListener('click', () => root.querySelector('.w').classList.toggle('min'));
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && !e.isComposing && input.value.trim()) {
+        send({ type: 'narration', text: truncate(input.value.trim(), 500), via: 'typed' });
+        input.value = ''; ok.textContent = '已记下'; setTimeout(() => { ok.textContent = ''; }, 1500);
+      }
+    });
+    document.documentElement.appendChild(box);
+  }
+  function hideBox() { if (box) { box.remove(); box = null; } }
+  if (window === window.top) {
+    const poll = () => {
+      try {
+        chrome.runtime.sendMessage({ __replayStatus: true }, (r) => {
+          if (chrome.runtime.lastError) return;
+          if (r && r.recording) showBox(); else hideBox();
+        });
+      } catch { /* extension reloaded */ }
+    };
+    poll();
+    setInterval(poll, 2500);
+  }
+
   function send(payload) {
     try {
       chrome.runtime.sendMessage({
@@ -168,7 +213,7 @@
 
   for (const type of ['click', 'dblclick', 'contextmenu']) {
     window.addEventListener(type, (e) => {
-      if (!e.isTrusted) return;
+      if (!e.isTrusted || ours(e)) return;
       const el = targetOf(e);
       const clickable = el && el.closest ? el.closest(CLICKABLE) || el : el;
       send({ type, target: describe(clickable), x: Math.round(e.clientX), y: Math.round(e.clientY) });
@@ -185,7 +230,7 @@
     send({ type: 'input', target: describe(el), value, masked });
   }
   window.addEventListener('input', (e) => {
-    if (!e.isTrusted) return;
+    if (!e.isTrusted || ours(e)) return;
     const el = targetOf(e);
     if (!el || (!('value' in el) && !el.isContentEditable)) return;
     if (['checkbox', 'radio', 'file'].includes(el.type) || el.tagName === 'SELECT') return;
@@ -194,12 +239,13 @@
     inputTimers.set(el, setTimeout(() => flushInput(el), 800));
   }, { capture: true, passive: true });
   window.addEventListener('blur', (e) => {
+    if (ours(e)) return;
     const el = targetOf(e);
     if (el && inputTimers.has(el)) flushInput(el);
   }, { capture: true, passive: true });
 
   window.addEventListener('change', (e) => {
-    if (!e.isTrusted) return;
+    if (!e.isTrusted || ours(e)) return;
     const el = targetOf(e);
     if (!el) return;
     if ((el.tagName || '') === 'SELECT') {
@@ -215,7 +261,7 @@
   }, { capture: true, passive: true });
 
   window.addEventListener('keydown', (e) => {
-    if (!e.isTrusted || e.repeat || e.isComposing) return;
+    if (!e.isTrusted || e.repeat || e.isComposing || ours(e)) return;
     const special = e.key && e.key.length > 1 && !['Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'Process', 'Unidentified'].includes(e.key);
     const combo = (e.metaKey || e.ctrlKey || e.altKey) && e.key && e.key.length === 1;
     if (!special && !combo) return;
@@ -243,6 +289,7 @@
   }, { capture: true, passive: true });
 
   window.addEventListener('paste', (e) => {
+    if (ours(e)) return;
     const el = targetOf(e);
     const text = e.clipboardData ? e.clipboardData.getData('text') : '';
     send({ type: 'paste', target: describe(el), length: text.length });

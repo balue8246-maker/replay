@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "REPLAY Recorder",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Records your browser actions for REPLAY (local only; sends nothing unless `replay record` is running on 127.0.0.1).",
   "permissions": ["tabs", "webNavigation", "downloads", "webRequest", "storage"],
   "host_permissions": ["<all_urls>"],

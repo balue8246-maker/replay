@@ -6,6 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { which, REPLAY_HOME, REPO_ROOT } from './util.mjs';
 
+// cua-driver bring_to_front: only the exact, verified result counts
+// ("…_unverified" also contains the word "verified").
+export function frontVerified(fr) {
+  if (fr?.exact_window_effect?.verified === true) return true;
+  const code = String(fr?.code || fr?.status || '');
+  return /(^|_)verified$/.test(code) && !/unverified/.test(code);
+}
+
 const OCR_BIN = path.join(REPLAY_HOME, 'bin', 'replay-ocr');
 
 // Apple Vision OCR helper, compiled on first use (swiftc ships with Xcode CLT).
@@ -132,7 +140,7 @@ export function observeVision(target, win) {
   // list_windows proved unreliable (another app's chat was captured under the
   // window's rectangle), so front the exact window and require verification.
   const fr = cua('bring_to_front', { pid: target.pid, window_id: target.window_id });
-  if (!/verified/.test(String(fr?.code || fr?.status || JSON.stringify(fr)))) return null;
+  if (!frontVerified(fr)) return null;
   spawnSync('sleep', ['0.5']);
   const shot = cua('get_desktop_state', {});
   if (!shot.screenshot_png_b64) return null;
@@ -241,7 +249,7 @@ export function chooseInDialog(target, p, { button } = {}) {
   const panel = listWindows().find((w) => w.pid === target.pid && w.is_on_screen && /^(打开|Open|存储|Save|)$/.test(w.title || '') && w.bounds.height > 200);
   if (!panel) throw new Error('没找到这个应用的打开/存储窗口（先点出它）');
   const fr = cua('bring_to_front', { pid: target.pid, window_id: panel.window_id });
-  if (!/verified/.test(String(fr?.code))) throw new Error(`没法把对话框调到最前（${fr?.code}），不往全局发按键`);
+  if (!frontVerified(fr)) throw new Error(`没法把对话框调到最前（${fr?.code}），不往全局发按键`);
   const desk = { kind: 'desktop', display_id: 'primary' };
   cua('hotkey', { keys: ['cmd', 'shift', 'g'], target: desk });
   spawnSync('sleep', ['0.6']);

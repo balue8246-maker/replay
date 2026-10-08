@@ -1,10 +1,10 @@
 # REPLAY
 
-**computer use + browser use，快慢搭配。** 慢模型（如 Opus）当指挥：拆任务、处理例外、批准高风险动作；Jev（TypeSafe System One，每次约 0.5–1 秒）当判断：每一屏看什么、点哪个、填哪个值、做完没有；代码当手脚：网页用 Ego Lite，桌面用 cua-driver，系统文件对话框用 Peekaboo，读不到结构的界面用 macOS 自带文字识别。人演示一遍的录制会变成任务链和提示，下次照着跑。
+**computer use + browser use，快慢搭配。** 慢模型（如 Opus）当指挥：拆任务、处理例外、批准高风险动作；Jev（TypeSafe System One，每次约 0.5–1 秒）当判断：每一屏看什么、点哪个、填哪个值、做完没有；代码当手脚：网页用 Ego Lite，桌面用 cua-driver，系统文件对话框用 Peekaboo，读不到结构的界面用 macOS 自带文字识别。它能两种方式学会一件事：**跟学**（先问清楚，人边做边说，agent 复述确认，换参数监督试跑，然后存成技能）和**自学**（自己只读地逛一遍网页系统，写出操作手册，再按需求生成任务去拉数）。
 
-*Slow model commands, Jev (~0.5–1 s typed judgments) decides each screen, code acts: Ego Lite for web, cua-driver + Peekaboo for macOS apps and native dialogs, Apple Vision OCR as a fallback. Demonstrations become task chains with hints.*
+*Slow model commands, Jev (~0.5–1 s typed judgments) decides each screen, code acts: Ego Lite for web, cua-driver + Peekaboo for macOS apps and native dialogs, Apple Vision OCR as a fallback. It learns a task from one narrated demo (ask → demo → recap → supervised trial), or by exploring a GUI site read-only and writing its own manual.*
 
-> 状态：v0.2，仅 macOS。设计见 [DESIGN](docs/DESIGN.md)，进度见 [路线图](docs/ROADMAP.md)。
+> 状态：v0.3，仅 macOS。设计见 [DESIGN](docs/DESIGN.md)，进度见 [路线图](docs/ROADMAP.md)。
 
 ## 实测（2026-10-08，本机）
 
@@ -13,6 +13,9 @@
 | 网页表单任务链（打开 → 填 4 项 → 计划内提交 → 等待 → 轮询核验） | 13.6 秒 | 0 次（提交是写在计划里的确认） | 9 次，共 4.2 秒 |
 | 在 Ego 里重新加载扩展（点按钮 → 系统选目录窗口 → 确认） | 14 秒 | 0 次 | 4 次，共 2.1 秒 |
 | 同上，v0.1 时全靠慢模型 | 约 9 分钟 | 全程 | — |
+| 跟学：Snipe-IT 演示一遍（品牌 Dell，语音 + 打字讲解）→ 换 Surface 无人跑：打开 → 资产 → 可部署 → 搜品牌 → 每页条数（已满足就跳过）→ 导出 CSV → 核对行数 | 25 秒 | 0 次 | 9 次，共 7.8 秒 |
+| 自学：只读逛 Snipe-IT 25 页 → 操作手册 | 119 秒 | 0 次 | 25 次，共 13.7 秒 |
+| 自学后按一句需求拉数（可部署 + Lenovo，全部 70 行；列表是分页的，先调每页条数再导出，文件行数 = 页面总数） | 27.5 秒 | 0 次 | 11 次，共 8.3 秒 |
 
 ## 它解决什么
 
@@ -63,9 +66,25 @@ replay end                        # 指挥/Jev/耗时统计
 replay plan run examples/httpbin-pizza.plan.json --param input_1=Bob
 replay plan resume <run-id> [--skip]
 
-# 录制：人演示一遍 → 任务链
+# 跟学：先问 → 人边做边说 → agent 复述确认 → 换参数监督试跑 → 存成技能
+replay teach start "导出某品牌资产" --url https://…      # 列出要先问清楚的问题
+replay teach brief goal=… inputs=… evidence=…
+replay teach record                 # 后台运行；人在 Ego 里操作，边做边说（或在页面右下角打字）
+replay teach stop                   # → understanding.md：步骤 + 讲解 + 参数猜测 + 误操作 + 接口 + 要问的问题
+replay teach answer <问题id> "…"    # / teach correct "…"
+replay teach compile                # → procedure.md + plan.json
+replay teach trial --param brand=Lenovo   # 监督试跑：产出结果前停下等确认
+replay teach save --as snipeit-brand-export
+
+# 自学：自己逛一遍网页系统 → 操作手册 → 按需求拉数
+replay explore https://… --focus "资产 导出" --as snipeit   # 只读：不提交、不新建、不导出
+replay explore plan "导出所有可部署、搜索 Dell 的资产 CSV" --value "q=Dell::search keyword" --as snipeit
+replay plan run ~/.replay/sites/snipeit/plan-….json
+replay explore note snipeit "导出只导当前页，先把每页条数调大"   # 跑出来的经验写回手册
+
+# 底层录制（不经过问答）
 replay record "导出周报" --task "导出上周的销售明细" --inputs "日期范围"
-replay plan from <录制>            # 生成 plan.json（阶段 + 上次的做法当提示）
+replay plan from <录制>
 ```
 
 ## 隐私
@@ -75,16 +94,18 @@ replay plan from <录制>            # 生成 plan.json（阶段 + 上次的做�
 - 接口只记方法、地址、状态码，不记请求体和响应体
 - 本地守护进程拒绝来自网页的写入（只接受扩展和本机工具）
 - 截图识字前先把目标窗口调到最前并核验，核验不过就不截图；系统对话框走 Peekaboo 读结构，不截图
+- 讲解语音在本机识别（macOS 语音识别，离线模式），音频不落盘、不上传；只保存文字和时间
+- 自学只读：不点提交/新建/删除/导出类按钮，遇到登录页就停
 
 ## 自测
 
 ```bash
-npm test             # 离线：守护进程、判断规则、内循环、录制 → 任务链
+npm test             # 离线：守护进程、判断规则、内循环、录制 → 任务链、跟学理解稿、行数核验、自学手册
 npm run test:ego     # 真实 Ego：录制表单 → 整理 → 换参数回放
 ```
 
 ## 致谢
 
-录制脚本改编自 [ugarchance/record-and-replay-skill](https://github.com/ugarchance/record-and-replay-skill)（MIT）；网页观察与 Jev 调用方式沿用 [ZephyrDeng/ego-jev](https://github.com/ZephyrDeng/ego-jev)（MIT）；桌面用 [cua-driver](https://github.com/trycua/cua)（MIT）和 [Peekaboo](https://github.com/openclaw/Peekaboo)（MIT）。思路参考 Ghost OS、OpenAdapt、Skyvern 等，详见 [NOTICE](NOTICE.md)。
+录制脚本改编自 [ugarchance/record-and-replay-skill](https://github.com/ugarchance/record-and-replay-skill)（MIT）；网页观察与 Jev 调用方式沿用 [ZephyrDeng/ego-jev](https://github.com/ZephyrDeng/ego-jev)（MIT）；桌面用 [cua-driver](https://github.com/trycua/cua)（MIT）和 [Peekaboo](https://github.com/openclaw/Peekaboo)（MIT）。跟学/自学的思路参考 Agent Workflow Memory（Apache-2.0）、SkillWeaver（MIT）、AutoManual，以及 Ghost OS、OpenAdapt、Skyvern 等（只借思路，没有拷代码），详见 [NOTICE](NOTICE.md)。
 
 MIT License.

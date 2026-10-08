@@ -210,7 +210,7 @@ export function printDo(r, t0) {
 }
 
 // Programmatic inner loop on the session's current surface; updates and saves s.
-export async function runDo(s, { goal, values, hints, maxSteps = 15, expect = null }) {
+export async function runDo(s, { goal, values, hints, maxSteps = 15, expect = null, untilValues = false }) {
   if (goal && goal !== s.goal) { s.goal = goal; s.history = []; }
   if (values) s.values = { ...s.values, ...values };
   if (hints) s.hints = hints;
@@ -220,13 +220,13 @@ export async function runDo(s, { goal, values, hints, maxSteps = 15, expect = nu
     const D = await import('./desktop.mjs');
     const { innerLoop } = await import('./loop.mjs');
     let acted = false;
-    r = await innerLoop({ observe: async () => { syncTarget(D, s, acted); acted = false; return D.observeDesktop(s.target); }, act: async (c, a) => { const r = D.actDesktop(s.target, c, a); acted = true; return r; }, goal: s.goal, values: s.values, hints: s.hints, history: s.history, maxSteps, expect });
+    r = await innerLoop({ observe: async () => { syncTarget(D, s, acted); acted = false; return D.observeDesktop(s.target); }, act: async (c, a) => { const r = D.actDesktop(s.target, c, a); acted = true; return r; }, goal: s.goal, values: s.values, hints: s.hints, history: s.history, maxSteps, expect, untilValues });
   } else {
     const script = `const { observeWeb, actWeb } = await import(${JSON.stringify(WEB)});
 const { innerLoop } = await import(${JSON.stringify(LOOP)});
 const task = await taskSpace(${Number(s.spaceId)});
 const page = task.page("p1");
-const r = await innerLoop({ observe: () => observeWeb(page), act: (c, a) => actWeb(page, c, a), goal: ${JSON.stringify(s.goal)}, values: ${JSON.stringify(s.values)}, hints: ${JSON.stringify(s.hints)}, history: ${JSON.stringify(s.history)}, maxSteps: ${Number(maxSteps)}, expect: ${JSON.stringify(expect)} });
+const r = await innerLoop({ observe: () => observeWeb(page), act: (c, a) => actWeb(page, c, a), goal: ${JSON.stringify(s.goal)}, values: ${JSON.stringify(s.values)}, hints: ${JSON.stringify(s.hints)}, history: ${JSON.stringify(s.history)}, maxSteps: ${Number(maxSteps)}, expect: ${JSON.stringify(expect)}, untilValues: ${!!untilValues} });
 console.log("__DO__" + JSON.stringify(r));`;
     const out = egoRun(script, { timeout: 15 * 60_000 });
     const line = (out.out + '\n' + out.err).split('\n').find((l) => l.startsWith('__DO__'));

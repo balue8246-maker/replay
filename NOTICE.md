@@ -18,6 +18,10 @@ REPLAY is MIT-licensed. It adapts code and borrows ideas from the projects below
 
 ## Ideas only (no code copied)
 
+- **Agent Workflow Memory** (zorazrw/agent-workflow-memory, Apache-2.0) — induce reusable workflows from experience and abstract non-fixed values into named variables; REPLAY's `{{key}}` params and lesson compile follow this idea. No code copied.
+- **SkillWeaver** (MIT) — explore a site → practice → distill skills; shape of `replay explore` (read-only crawl → manual → plan → run → write lessons back). No code copied.
+- **AutoManual** (no license stated) — an agent writes its own manual of an environment from interaction; idea only.
+- Research on GUI-agent reliability (self-reported confidence is poorly calibrated; completion detection is weak; poisoned trajectories get admitted as skills) motivated independent evidence checks and the supervised trial before saving.
 - **Ghost OS** (MIT) — recipes learned from demonstrations, AX-tree-first perception.
 - **OpenAdapt** / **openadapt-capture** (MIT) — desktop demonstration capture; planned desktop recorder.
 - **Skyvern** (AGPL-3.0) — workflow block taxonomy (navigation / extraction / download / wait / human interaction / validation / loops). Ideas only; no AGPL code is included.

@@ -6,7 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { HOME, EXTENSION_DIR, REPO_ROOT, SECRETS_PATH, OK, BAD, WARN, color, confirm, prompt, saveConfig, loadConfig, sh, egoRunAsync } from './util.mjs';
+import { createHash } from 'node:crypto';
+import { HOME, REPLAY_HOME, EXTENSION_DIR, REPO_ROOT, SECRETS_PATH, OK, BAD, WARN, color, confirm, prompt, saveConfig, loadConfig, sh, egoRunAsync, readJson } from './util.mjs';
 import { runChecks, printChecks, EGO_DMG, TYPESAFE_CONSOLE, AGENT_SKILLS } from './doctor.mjs';
 import { pingJev, resolveJevKey } from './jev.mjs';
 import { probeExtension } from './record.mjs';
@@ -42,6 +43,35 @@ export function installExtensionFiles() {
 
 // Open a page in a throwaway Ego space while a probe server listens; the
 // extension's content script fires on load and calls the daemon port.
+// Already-installed unpacked extension: press its own 重新加载 button on the
+// extensions page inside a private TaskSpace (no window needs to be on screen).
+// Chromium's id for an unpacked extension: sha256(absolute path) → a..p.
+export function unpackedId(dir) {
+  const h = createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, 32);
+  return [...h].map((c) => String.fromCharCode(97 + parseInt(c, 16))).join('');
+}
+
+export async function reloadExtensionViaPage(id) {
+  if (!id) return { err: '不知道扩展 ID' };
+  const r = await egoRunAsync(`const task = await taskSpace("REPLAY setup reload");
+const page = task.page("p1");
+await page.goto("chrome://extensions/");
+await new Promise((r) => setTimeout(r, 1200));
+const out = await page.evaluate(\`(() => {
+  const m = document.querySelector('extensions-manager');
+  const list = m && m.shadowRoot.querySelector('extensions-item-list');
+  const item = list && list.shadowRoot.querySelector('extensions-item#${id}');
+  const btn = item && item.shadowRoot.querySelector('#dev-reload-button');
+  if (!btn) return 'no-button';
+  btn.click();
+  return 'clicked';
+})()\`);
+await new Promise((r) => setTimeout(r, 1500));
+await task.finish({ keep: [] });
+console.log(out);`, { timeout: 60000 });
+  return /clicked/.test(`${r.out}\n${r.err}`) ? { ok: true } : { err: `扩展页上没找到重新加载按钮（${(r.out || r.err).slice(-80)}）` };
+}
+
 export async function verifyExtension() {
   let ready;
   const listening = new Promise((r) => { ready = r; });
@@ -67,7 +97,14 @@ async function loadExtensionViaUI(extDir) {
   const s = newSession();
   s.surface = 'desktop';
   s.target = { pid: w.pid, window_id: w.window_id, app_name: w.app_name, title: w.title, app: w.app_name };
-  const r = await runDo(s, { goal: '用「加载未打包的扩展程序」选中扩展目录 {{dir}} 并确认', values: { dir: { value: extDir, hint: 'extension directory path' } }, maxSteps: 4 });
+  let r;
+  try {
+    r = await runDo(s, { goal: '用「加载未打包的扩展程序」选中扩展目录 {{dir}} 并确认', values: { dir: { value: extDir, hint: 'extension directory path' } }, maxSteps: 4 });
+  } finally {
+    // This helper session is internal to setup: do not leave it as "the current session".
+    const f = path.join(REPLAY_HOME, 'session.json');
+    if (readJson(f, null)?.id === s.id) fs.rmSync(f, { force: true });
+  }
   const panelGone = !D.listWindows().some((x) => x.pid === w.pid && /^(打开|Open)$/.test(x.title || '') && x.is_on_screen);
   if (!panelGone) throw new Error(`对话框没关（${r.why}）`);
   return r;
@@ -144,6 +181,14 @@ export async function setup({ yes = false } = {}) {
   console.log(`${OK} 扩展文件已复制到 ${extDir.replace(HOME, '~')}`);
   if ((await get('ego-cli')).ok) {
     let ext = loadConfig().extensionVerifiedAt ? await verifyExtension() : null;
+    // A newer extension on disk than the one running in Ego: reload it.
+    const want = readJson(path.join(extDir, 'manifest.json'))?.version;
+    if (ext && want && ext !== want) {
+      console.log(`${WARN} Ego 里运行的是 v${ext}，磁盘上是 v${want}，重新加载`);
+      const rr = await reloadExtensionViaPage(unpackedId(extDir));
+      ext = rr.ok ? await verifyExtension() : null;
+      if (ext !== want) { if (rr.err) console.log(`${WARN} ${rr.err}`); ext = null; }
+    }
     // Agent path: load it through Ego's own UI with REPLAY's desktop layer
     // (needs the extensions page open in an Ego window on the current desktop).
     if (!ext) {
