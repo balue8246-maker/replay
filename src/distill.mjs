@@ -66,6 +66,8 @@ export function buildSteps(events) {
 
     switch (e.type) {
       case 'navigate': {
+        // Browser-internal pages (new tab, settings) are never workflow steps.
+        if (/^(chrome|ego|edge|about|devtools|chrome-extension):/i.test(e.url || '')) break;
         const byUser = ['typed', 'auto_bookmark', 'generated', 'start_page', 'keyword'].includes(e.transition);
         const recentAction = e.t - lastActionT < 4000;
         if (byUser || (!recentAction && !page.url)) {
