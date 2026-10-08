@@ -1,0 +1,16 @@
+{
+  "name": "replay-rpa",
+  "version": "0.1.0",
+  "description": "REPLAY — record once, replay fast. Human demo → skill; Jev fast judgments + slow-model fallback; runs in Ego Lite without stealing your screen.",
+  "type": "module",
+  "bin": { "replay": "bin/replay.mjs" },
+  "engines": { "node": ">=20" },
+  "os": ["darwin"],
+  "scripts": {
+    "test": "node test/selftest.mjs",
+    "test:ego": "node test/selftest.mjs --ego"
+  },
+  "files": ["bin", "src", "extension", "skill", "docs", "README.md", "LICENSE", "NOTICE.md"],
+  "license": "MIT",
+  "keywords": ["rpa", "computer-use", "browser-use", "jev", "ego-lite", "record-replay", "agent-skill"]
+}
