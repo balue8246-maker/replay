@@ -1,0 +1,83 @@
+{
+  "schema": "replay-plan/1",
+  "name": "httpbin-pizza",
+  "task": "提交披萨订单表单",
+  "inputs": {
+    "input_1": {
+      "hint": "Customer name:",
+      "default": "Alice"
+    },
+    "input_2": {
+      "hint": "Delivery instructions:",
+      "default": "ring twice"
+    }
+  },
+  "stages": [
+    {
+      "type": "open",
+      "url": "https://httpbin.org/forms/post",
+      "id": "s1"
+    },
+    {
+      "type": "do",
+      "goal": "在这个页面上：在「Customer name:」填 {{input_1}}；勾选「Medium」；勾选「Bacon」；在「Delivery instructions:」填 {{input_2}}。只做这些，不要提交/发送",
+      "values": [
+        "input_1",
+        "input_2"
+      ],
+      "valueHints": {
+        "input_1": "Customer name:",
+        "input_2": "Delivery instructions:"
+      },
+      "hints": [
+        "整体任务：提交披萨订单表单（本段只是其中一步）",
+        "上次的做法：在「Customer name:」填 {{input_1}} → 勾选「Medium」 → 勾选「Bacon」 → 在「Delivery instructions:」填 {{input_2}}"
+      ],
+      "maxSteps": 10,
+      "expect": [
+        {
+          "op": "fill",
+          "name": "Customer name:"
+        },
+        {
+          "op": "click",
+          "name": "Medium"
+        },
+        {
+          "op": "click",
+          "name": "Bacon"
+        },
+        {
+          "op": "fill",
+          "name": "Delivery instructions:"
+        }
+      ],
+      "until": "confirm",
+      "id": "s2"
+    },
+    {
+      "type": "act",
+      "target": "Submit order",
+      "op": "click",
+      "check": {
+        "url": "https://httpbin.org/post*"
+      },
+      "id": "s3"
+    },
+    {
+      "id": "s4",
+      "type": "wait",
+      "seconds": 2
+    },
+    {
+      "id": "s5",
+      "type": "poll",
+      "every": 3,
+      "max": 3,
+      "check": {
+        "text": "{{input_1}}",
+        "jev": "The page shows a submitted order whose customer name is the given one."
+      }
+    }
+  ]
+}

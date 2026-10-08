@@ -1,6 +1,6 @@
 {
   "name": "replay-rpa",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "REPLAY — record once, replay fast. Human demo → skill; Jev fast judgments + slow-model fallback; runs in Ego Lite without stealing your screen.",
   "type": "module",
   "bin": { "replay": "bin/replay.mjs" },

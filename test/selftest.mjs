@@ -60,6 +60,60 @@ await test('offline: daemon records, refuses web origins, distills', async () =>
   assert.doesNotMatch(skill, /MASKED\*\*\*，例/);
 });
 
+await test('offline: judge policy (guard, plurality, value, likely-done)', async () => {
+  const { decide, formatView } = await import('../src/judge.mjs');
+  const c = (id, role, name, p) => ({ id, role, name, p });
+  const st = { none: 0.05, done: 0.1, stuck: 0.05 };
+  const submit = c('@9', 'button', 'Submit order', 0.97);
+  assert.equal(decide({ top: submit, margin: 0.9, st, ranked: [submit] }).auto, false, 'guarded click never auto');
+  const link = c('@3', 'link', 'Reports', 0.95);
+  assert.equal(decide({ top: link, margin: 0.9, st, ranked: [link] }).auto, true);
+  const a = c('@1', 'radio', 'Medium', 0.5), b = c('@2', 'checkbox', 'Bacon', 0.4);
+  assert.equal(decide({ top: a, margin: 0.1, st, ranked: [a, b] }).auto, true, 'form-control split is order, not doubt');
+  const l1 = c('@4', 'link', 'A', 0.5), l2 = c('@5', 'link', 'B', 0.4);
+  assert.equal(decide({ top: l1, margin: 0.1, st, ranked: [l1, l2] }).auto, false, 'link split is real doubt');
+  const f = c('@6', 'textbox', 'Name', 0.5);
+  const values = { name: { value: 'Dana', hint: 'name' } };
+  assert.equal(decide({ top: f, margin: 0.1, st, ranked: [f], vk: ['name', 0.9], values }).auto, true);
+  assert.equal(decide({ top: f, margin: 0.9, st, ranked: [f], vk: ['none', 0.9], values }).auto, false, 'no value → commander');
+  assert.equal(decide({ top: null, margin: 0, st: { none: 0.95, done: 0.5 }, ranked: [] }).done, true);
+  assert.match(formatView({ surface: 'web', where: 'x', ranked: [link], total: 1, state: st, decision: { auto: true, op: 'click', id: '@3', why: 'p' }, jev: { ms: 1 } }), /可自动执行/);
+});
+
+await test('offline: inner loop with recorded expectations, escalation on guard', async () => {
+  const { innerLoop } = await import('../src/loop.mjs');
+  const screen = { checked: false, filled: false };
+  const obs = () => ({ surface: 'web', where: 'u', candidates: [{ id: '@1', role: 'textbox', name: 'Name', value: screen.filled ? 'Dana' : '' }, { id: '@2', role: 'checkbox', name: 'Bacon', checked: screen.checked }, { id: '@3', role: 'button', name: 'Submit order' }], texts: [] });
+  // Fake Jev: order-split on the first step, then confident.
+  const ask = async (state) => {
+    const todo = !screen.filled ? { '@1': 0.4, '@2': 0.3, none: 0.3 } : !screen.checked ? { '@2': 0.9, none: 0.1 } : { '@3': 0.95, none: 0.05 };
+    return { ms: 1, answers: { next: { probabilities: todo }, value_key: { probabilities: { name: 0.8, none: 0.2 } }, done: { noul: 0.1 }, stuck: { noul: 0.05 } } };
+  };
+  const act = async (c) => { if (c.id === '@1') screen.filled = true; if (c.id === '@2') screen.checked = true; return { ms: 1 }; };
+  const values = { name: { value: 'Dana', hint: 'name' } };
+  const r1 = await innerLoop({ observe: obs, act, goal: 'g', values, ask, expect: [{ op: 'fill', name: 'Name' }, { op: 'click', name: 'Bacon' }] });
+  assert.equal(r1.status, 'done', r1.why);
+  assert.equal(r1.steps.length, 2);
+  const r2 = await innerLoop({ observe: obs, act, goal: 'g', values, ask });
+  assert.equal(r2.status, 'escalate');
+  assert.match(r2.why, /需确认/);
+});
+
+await test('offline: recording → plan.json (do segments, approved act, check)', async () => {
+  const { buildPlan } = await import('../src/distill.mjs');
+  const plan = buildPlan({ name: 't', task: 'order', startUrl: 'https://x/form', params: [{ key: 'input_1', label: 'Name', example: 'A', kind: 'text' }], steps: [
+    { kind: 'goto', url: 'https://x/form' },
+    { kind: 'fill', param: 'input_1', target: { name: 'Name' }, label: 'Name' },
+    { kind: 'check', checked: true, target: { name: 'Bacon' }, label: 'Bacon' },
+    { kind: 'click', target: { name: 'Submit order' }, label: 'Submit order', expect: { url: 'https://x/post?id=1' } },
+  ] });
+  assert.deepEqual(plan.stages.map((s) => s.type), ['open', 'do', 'act']);
+  assert.equal(plan.stages[1].until, 'confirm');
+  assert.deepEqual(plan.stages[1].expect, [{ op: 'fill', name: 'Name' }, { op: 'click', name: 'Bacon' }]);
+  assert.equal(plan.stages[2].check.url, 'https://x/post*');
+  assert.equal(plan.inputs.input_1.default, 'A');
+});
+
 if (process.argv.includes('--ego')) {
   await test('ego: content script captures trusted input in Ego, distill, replay with new param', async () => {
     const r = await record({ name: 'httpbin-form', task: '提交披萨订单表单', quiet: true });
@@ -67,16 +121,25 @@ if (process.argv.includes('--ego')) {
     // Shim chrome.runtime so the real content script queues events in-page;
     // the Ego-side script drains the queue and forwards it to the daemon.
     const shim = `window.chrome = window.chrome || {}; chrome.runtime = { sendMessage: (m) => window.__rrEmit(JSON.stringify(m)) };`;
+    // If the real recorder extension is loaded in Ego it records by itself;
+    // injecting the shim too would double every event.
+    // (REPLAY_HOME is a temp dir here; the extension's install state lives in the real one.)
+    const realCfg = path.join(os.homedir(), '.replay', 'config.json');
+    const realExt = fs.existsSync(realCfg) && !!JSON.parse(fs.readFileSync(realCfg, 'utf8')).extensionVerifiedAt && !process.env.REPLAY_SELFTEST_SHIM;
+    console.log(`  （录制来源：${realExt ? 'Ego 里已加载的真扩展' : '注入的 content script shim'}）`);
     const script = `
 const post = (e) => fetch(${JSON.stringify(DAEMON_URL)} + "/event", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(e) });
 const task = await taskSpace("REPLAY selftest");
 const page = task.page("p1");
 await page.goto("https://httpbin.org/forms/post");
+const SHIM = ${!realExt};
+if (SHIM) {
 await post({ source: "nav", type: "navigate", url: await page.url(), transition: "typed" });
 await page.cdp("Runtime.addBinding", { name: "__rrEmit" });
 await page.evaluate(${JSON.stringify(shim + '\n' + content)});
 await page.events();
-const drain = async () => { for (const ev of await page.events()) { if (ev.method !== "Runtime.bindingCalled" || ev.params.name !== "__rrEmit") continue; const { __replay, ...rest } = JSON.parse(ev.params.payload); await post({ source: "page", ...rest }); } };
+}
+const drain = async () => { if (!SHIM) return; for (const ev of await page.events()) { if (ev.method !== "Runtime.bindingCalled" || ev.params.name !== "__rrEmit") continue; const { __replay, ...rest } = JSON.parse(ev.params.payload); await post({ source: "page", ...rest }); } };
 await page.click("input[name=custname]");
 await page.fill("input[name=custname]", "Alice");
 await page.click("input[value=medium]");
@@ -87,7 +150,8 @@ await drain();
 await page.click("text=Submit order");
 await page.waitForURL("**/post", { timeout: 15000 });
 await drain();
-await post({ source: "nav", type: "navigate", url: await page.url(), transition: "form_submit" });
+if (SHIM) await post({ source: "nav", type: "navigate", url: await page.url(), transition: "form_submit" });
+else await new Promise((r) => setTimeout(r, 1500));
 await task.finish({ keep: [] });
 console.log("SELFTEST_OK");`;
     const res = await egoRunAsync(script, { timeout: 120000 });

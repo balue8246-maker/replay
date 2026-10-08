@@ -66,6 +66,8 @@ export async function runChecks({ online = false } = {}) {
   add({ id: 'replay-skill', required: false, ok: skillOk, msg: skillOk ? `REPLAY 技能已装到 ${skillLink.replace(HOME, '~')}` : 'agent 还不知道 REPLAY（未装技能）', fix: `ln -s "${path.join(REPO_ROOT, 'skill')}" ~/.agents/skills/replay` });
 
   const cua = which('cua-driver');
+  const pkb = which('peekaboo');
+  add({ id: 'peekaboo', required: false, ok: !!pkb, msg: pkb ? `${pkb}（系统打开/存储对话框）` : '未装 Peekaboo（系统文件对话框会退回截图识字）', fix: 'npm i -g @steipete/peekaboo' });
   add({ id: 'cua-driver', required: false, ok: !!cua, msg: cua ? `${cua}（桌面操作；用前需 cua-driver permissions grant）` : '未装 cua-driver（桌面 App 操作才需要）', fix: '见 https://github.com/trycua/cua' });
 
   const lark = which('lark-cli');

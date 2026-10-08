@@ -4,6 +4,7 @@
 //   SKILL.draft.md    Open Agent Skills draft (when to use / inputs / steps / verify)
 //   refine-prompt.md  instructions for the slow model (Opus) to finish the skill
 // Purely deterministic; the slow model refines the draft afterwards.
+import { GUARD } from './judge.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { writeJson } from './util.mjs';
@@ -201,6 +202,60 @@ function consequences(s) {
   return out;
 }
 
+// P5: steps → task chain. One `do` stage per page segment (Jev drives it, the
+// recorded steps become hints); outward/irreversible clicks become explicit
+// plan-approved `act` stages; recorded consequences become checks.
+export function buildPlan(doc) {
+  const stages = [];
+  const inputs = Object.fromEntries((doc.params || []).filter((p) => p.kind !== 'select').map((p) => [p.key, { hint: p.label, default: p.secret ? undefined : p.example }]));
+  if (doc.startUrl) stages.push({ type: 'open', url: doc.startUrl });
+  let seg = [];
+  const brief = (s) => {
+    switch (s.kind) {
+      case 'fill': return `在「${s.target?.name || s.label}」填 {{${s.param}}}`;
+      case 'check': return `${s.checked ? '勾选' : '取消勾选'}「${s.target?.name || s.label}」`;
+      case 'select': return `在「${s.target?.name || s.label}」选「${s.value}」`;
+      case 'click': return `点「${s.target?.name || s.target?.text || s.label}」`;
+      case 'press': return `按 ${s.key}`;
+      default: return stepLine(s);
+    }
+  };
+  const flush = (until) => {
+    if (!seg.length) return;
+    const values = [...new Set(seg.filter((s) => s.param).map((s) => s.param))];
+    stages.push({
+      type: 'do',
+      goal: `在这个页面上：${seg.map(brief).join('；')}${until === 'confirm' ? '。只做这些，不要提交/发送' : ''}`,
+      values,
+      valueHints: Object.fromEntries(values.map((k) => [k, inputs[k]?.hint || k])),
+      hints: [...(doc.task ? [`整体任务：${doc.task}（本段只是其中一步）`] : []), `上次的做法：${seg.map(brief).join(' → ')}`],
+      maxSteps: Math.max(6, seg.length * 2 + 2),
+      expect: seg.filter((s) => ['fill', 'check', 'select', 'click'].includes(s.kind)).map((s) => ({ op: s.kind === 'check' ? 'click' : s.kind, name: s.target?.name || s.target?.text || '' })).filter((e) => e.name),
+      ...(until ? { until } : {}),
+    });
+    seg = [];
+  };
+  for (const s of doc.steps) {
+    if (s.kind === 'goto') { if (stages.length && s.url !== doc.startUrl) { flush(); stages.push({ type: 'open', url: s.url }); } continue; }
+    if (s.kind === 'note') continue;
+    const name = s.target?.name || s.target?.text || '';
+    const outward = s.kind === 'click' && GUARD.test(name);
+    if (outward) {
+      flush('confirm');
+      const act = { type: 'act', target: name, op: 'click' };
+      if (s.expect?.url) act.check = { url: s.expect.url.replace(/\?.*$/, '') + '*' };
+      stages.push(act);
+      continue;
+    }
+    seg.push(s);
+    if (s.expect?.url || s.opensTab) flush();
+    if (s.download) { flush(); stages.push({ type: 'check', file: `~/Downloads/*${path.extname(s.download.filename || '') || ''}` }); }
+  }
+  flush();
+  stages.forEach((st, i) => { st.id = `s${i + 1}`; });
+  return { schema: 'replay-plan/1', name: doc.name, task: doc.task || '', recording: doc.recording, inputs, stages };
+}
+
 export function distill(session) {
   const dir = session.dir;
   const events = loadEvents(dir);
@@ -219,6 +274,7 @@ export function distill(session) {
     steps,
   };
   writeJson(path.join(outDir, 'steps.json'), doc);
+  writeJson(path.join(outDir, 'plan.json'), buildPlan(doc));
 
   const md = [];
   md.push(`# ${session.name} — 录制步骤`, '');

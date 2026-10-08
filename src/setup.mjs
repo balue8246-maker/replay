@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { HOME, EXTENSION_DIR, REPO_ROOT, SECRETS_PATH, OK, BAD, WARN, color, confirm, prompt, saveConfig, sh, egoRunAsync } from './util.mjs';
+import { HOME, EXTENSION_DIR, REPO_ROOT, SECRETS_PATH, OK, BAD, WARN, color, confirm, prompt, saveConfig, loadConfig, sh, egoRunAsync } from './util.mjs';
 import { runChecks, printChecks, EGO_DMG, TYPESAFE_CONSOLE, AGENT_SKILLS } from './doctor.mjs';
 import { pingJev, resolveJevKey } from './jev.mjs';
 import { probeExtension } from './record.mjs';
@@ -55,6 +55,22 @@ await task.finish({ keep: [] });`, { timeout: 60000 });
   const ext = await probe;
   await nav;
   return ext;
+}
+
+// Click 「加载未打包的扩展程序」 and pick the directory in the native panel,
+// all through the commander-free inner loop (Jev picks, Peekaboo drives the panel).
+async function loadExtensionViaUI(extDir) {
+  const D = await import('./desktop.mjs');
+  const w = D.listWindows().find((x) => /^ego/i.test(x.app_name) && /^(扩展程序|Extensions)$/.test(x.title || '') && x.is_on_screen);
+  if (!w) throw new Error('没找到打开着的 Ego「扩展程序」页面');
+  const { newSession, runDo } = await import('./cu.mjs');
+  const s = newSession();
+  s.surface = 'desktop';
+  s.target = { pid: w.pid, window_id: w.window_id, app_name: w.app_name, title: w.title, app: w.app_name };
+  const r = await runDo(s, { goal: '用「加载未打包的扩展程序」选中扩展目录 {{dir}} 并确认', values: { dir: { value: extDir, hint: 'extension directory path' } }, maxSteps: 4 });
+  const panelGone = !D.listWindows().some((x) => x.pid === w.pid && /^(打开|Open)$/.test(x.title || '') && x.is_on_screen);
+  if (!panelGone) throw new Error(`对话框没关（${r.why}）`);
+  return r;
 }
 
 export async function setup({ yes = false } = {}) {
@@ -126,23 +142,29 @@ export async function setup({ yes = false } = {}) {
   h(5, '录制扩展（在 Ego 里记录你的操作，只在 replay record 运行时才记录）');
   const extDir = installExtensionFiles();
   console.log(`${OK} 扩展文件已复制到 ${extDir.replace(HOME, '~')}`);
-  if (interactive && (await get('ego-cli')).ok) {
-    let ext = null;
-    if (await confirm('先自动检测扩展是否已加载？（会在 Ego 后台开一个临时页面）')) ext = await verifyExtension();
+  if ((await get('ego-cli')).ok) {
+    let ext = loadConfig().extensionVerifiedAt ? await verifyExtension() : null;
+    // Agent path: load it through Ego's own UI with REPLAY's desktop layer
+    // (needs the extensions page open in an Ego window on the current desktop).
     if (!ext) {
+      const r = await loadExtensionViaUI(extDir).catch((e) => ({ err: e.message }));
+      if (r?.err) console.log(`${BAD} 自动加载没成：${r.err}`);
+      else ext = await verifyExtension();
+    }
+    if (!ext && interactive) {
       sh('/bin/sh', ['-c', `printf %s "${extDir}" | pbcopy`]);
       console.log([
-        '在 Ego Lite 里手动加载一次（只需一次）：',
-        `  1. 地址栏输入 ${color.bold('chrome://extensions')}`,
+        '在 Ego Lite 里加载一次（只需一次）：',
+        `  1. 地址栏输入 ${color.bold('ego://extensions')}`,
         '  2. 打开右上角「开发者模式」',
-        '  3. 点「加载已解压的扩展程序」，按 ⌘⇧G 粘贴路径（已复制到剪贴板）：',
+        '  3. 点「加载未打包的扩展程序」，按 ⌘⇧G 粘贴路径（已复制到剪贴板）：',
         `     ${extDir}`,
       ].join('\n'));
       await pause('加载好以后');
       ext = await verifyExtension();
     }
     if (ext) { saveConfig({ extensionVerifiedAt: new Date().toISOString(), extensionVersion: ext }); console.log(`${OK} 扩展已连通（v${ext}）`); }
-    else console.log(`${BAD} 没收到扩展的信号。确认扩展已启用后，重跑 replay setup。`);
+    else console.log(`${BAD} 没收到扩展的信号。agent：在 Ego 里打开 ego://extensions（开发者模式打开）后重跑 replay setup --yes。`);
   }
 
   // 6. REPLAY skill for agents

@@ -11,7 +11,7 @@ const rest = argv.slice(1);
 const flag = (name) => rest.includes(`--${name}`);
 const opt = (name, def = null) => { const i = rest.indexOf(`--${name}`); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[i + 1] : def; };
 const opts = (name) => rest.flatMap((a, i) => (a === `--${name}` && rest[i + 1] ? [rest[i + 1]] : []));
-const VALUE_FLAGS = new Set(['--task', '--inputs', '--minutes', '--param', '--as']);
+const VALUE_FLAGS = new Set(['--task', '--inputs', '--minutes', '--param', '--as', '--goal', '--value', '--hint', '--app', '--title', '--window', '--fill', '--use', '--select', '--press', '--hotkey', '--type', '--goto', '--on', '--max', '--choose']);
 const positional = () => rest.filter((a, i) => !a.startsWith('--') && !(i > 0 && VALUE_FLAGS.has(rest[i - 1])));
 const pkg = readJson(path.join(REPO_ROOT, 'package.json'), {});
 
@@ -30,6 +30,23 @@ const HELP = `${color.bold('REPLAY')} ${pkg.version || ''} — 人做一遍，�
   replay run [录制|技能] [--param 键=值 ...] [--no-jev] [--keep]
                                       在 Ego 后台回放；找不到元素时用 Jev 自愈
   replay save [录制] --as 技能名      把整理好的录制存成技能（~/.replay/skills/）
+
+指挥循环（给慢模型用：每次调用都返回 Jev 压缩后的约 10 行视图）
+  replay open <网址> [--goal "子目标"] [--value 键=值[::提示] ...] [--hint "提示"] [--new]
+  replay open --app <应用名> [--title 窗口标题] [--window 窗口id]   桌面窗口（cua-driver；对话框自动跟随）
+  replay goal "子目标" [--value …] [--hint …]   换子目标（清空历史）
+  replay look [--all] [--on web|desktop]        观察 + Jev 判断；--all 附全部候选
+  replay act <id> [--fill 文本 | --use 值键 | --select 选项 | --press 键 | --dbl]
+  replay act auto                               执行 Jev 上一次判断（仅当它允许自动）
+  replay act --press return | --hotkey cmd+shift+g | --type 文本 | --goto 网址 | --scroll
+  replay act --choose <路径>      在系统打开/存储对话框里选中该路径并确认（Peekaboo）
+  replay do "子目标" [--value …] [--hint …] [--max 15]   内循环：Jev 有把握且安全就自动做，否则停下交回
+  replay end [--keep]                           结束会话，打印 指挥/Jev 次数与耗时
+
+任务链（指挥写一次 plan.json，之后按段跑；需要判断时停下交回）
+  replay plan run <plan.json> [--param 键=值 ...]
+  replay plan resume [运行id] [--skip]          指挥/人处理完后续跑（--skip = 本段已手动完成）
+  replay plan from <录制>                       从录制生成 plan.json 草稿（distill 也会自动生成）
 `;
 
 async function main() {
@@ -118,11 +135,67 @@ async function main() {
     }
     case 'run':
       return runCmd();
+    case 'open':
+    case 'goal':
+    case 'look':
+    case 'act':
+    case 'end':
+    case 'do':
+      return cuCmd(cmd);
+    case 'plan':
+      return planCmd();
     default:
       console.log(`${BAD} 未知命令：${cmd}\n`);
       console.log(HELP);
       process.exitCode = 2;
   }
+}
+
+async function planCmd() {
+  const sub = rest[0];
+  const args = positional().slice(1);
+  const params = Object.fromEntries(opts('param').map((kv) => [kv.slice(0, kv.indexOf('=')), kv.slice(kv.indexOf('=') + 1)]));
+  const P = await import('../src/plan.mjs');
+  let r;
+  if (sub === 'run') r = await P.runPlan(args[0], { params });
+  else if (sub === 'resume') r = await P.resumePlan(args[0], { skip: flag('skip') });
+  else if (sub === 'from') {
+    const { resolveRecording } = await import('../src/record.mjs');
+    const { distill } = await import('../src/distill.mjs');
+    const s = resolveRecording(args[0]);
+    const d = distill(s);
+    console.log(`${OK} plan 草稿 → ${d.outDir}/plan.json`);
+    return;
+  } else { console.log(HELP); return; }
+  process.exitCode = r.exit;
+}
+
+async function cuCmd(c) {
+  const cu = await import('../src/cu.mjs');
+  const values = opts('value').length ? cu.parseValues(opts('value')) : null;
+  const hints = opts('hint');
+  const pos = positional();
+  if (c === 'open') return cu.cmdOpen({ url: pos[0], app: opt('app'), title: opt('title'), windowId: opt('window'), goal: opt('goal'), values, hints, fresh: flag('new') });
+  if (c === 'goal') return cu.cmdGoal({ goal: pos.join(' ') || opt('goal'), values, hints });
+  if (c === 'look') return cu.cmdLook({ all: flag('all'), on: opt('on') });
+  if (c === 'end') return cu.cmdEnd({ keep: flag('keep') });
+  if (c === 'do') return cu.cmdDo({ goal: pos.join(' ') || opt('goal'), values, hints, maxSteps: Number(opt('max', 15)), on: opt('on') });
+  // act
+  const id = pos[0];
+  if (id === 'auto') return cu.cmdAct({ auto: true, on: opt('on') });
+  const spec = { id, on: opt('on') };
+  if (opt('fill') != null) Object.assign(spec, { op: 'fill', value: opt('fill') });
+  else if (opt('use')) Object.assign(spec, { op: 'fill', valueKey: opt('use') });
+  else if (opt('select') != null) Object.assign(spec, { op: 'select', value: opt('select') });
+  else if (opt('choose')) Object.assign(spec, { op: 'choose', value: opt('choose') });
+  else if (opt('press')) Object.assign(spec, { op: 'press', key: opt('press') });
+  else if (opt('hotkey')) Object.assign(spec, { op: 'hotkey', keys: opt('hotkey').split('+') });
+  else if (opt('type') != null) Object.assign(spec, { op: 'type', value: opt('type') });
+  else if (opt('goto')) Object.assign(spec, { op: 'goto', value: opt('goto') });
+  else if (flag('scroll')) Object.assign(spec, { op: 'scroll' });
+  else if (flag('dbl')) Object.assign(spec, { op: 'dblclick' });
+  else spec.op = 'click';
+  return cu.cmdAct(spec);
 }
 
 async function main2(sub) {

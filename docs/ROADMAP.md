@@ -7,7 +7,7 @@ REPLAY 是"缝合怪"：现成的录制、感知、执行部件拿来改，自�
 **感知阶梯**（从便宜到贵，能停就停）
 
 1. 接口：录制时看到的 XHR/fetch，能直接调就不点页面
-2. 结构：Ego 页面快照（网页）/ cua-driver AX 树（桌面）——默认
+2. 结构：Ego 页面快照（网页）/ cua-driver AX 树（桌面）/ Peekaboo 对话框（系统打开/存储窗口）——默认
 3. 视觉区域：截图 → 框+文字 → Jev 选
 4. 慢模型看图：只在升级时
 
@@ -30,7 +30,23 @@ REPLAY 是"缝合怪"：现成的录制、感知、执行部件拿来改，自�
 - [x] `replay run`：Ego 后台回放，R0 定位器 → R1 Jev 自愈 → 失败时保留现场交给慢模型
 - [x] 自测：真实 Ego 页面录制 → 整理 → 换参数回放 → 破坏定位器后 Jev 自愈
 
-## v0.2 长任务工作流
+## v0.2（当前）指挥 / 判断 / 功能
+
+- [x] `replay look` / `act`：观察 + Jev 一次判断，约 10 行候选；统一动作入口
+- [x] `replay do`：Jev 内循环，有把握自动执行、高风险动作上交；录制提示（`expect`）参与判断
+- [x] `plan.json` 任务链：open / do / act / key / wait / poll / human / check，断点续跑
+- [x] 截图 → Vision 文字框 → Jev（截图前确认窗口在最前）
+- [x] `replay plan from`：录制直接生成任务链
+- [x] 系统文件对话框：Peekaboo 读取 + `replay act --choose <路径>`，`do` 里可自动完成
+- [x] `replay setup --yes` 第 5 步：通过 Ego 自己的界面加载录制扩展
+
+踩过的坑：
+- 另一个桌面（Space）上的窗口读不到 AX，也不能截图；需要先切过去
+- 多窗口 App 调到最前必须带 window_id
+- Chromium 窗口里的网页元素，按坐标点击无效，要走 AX 或 Ego
+- 系统给的窗口层级不可靠，截图前必须确认目标窗口在最前
+
+## 之前的 v0.2 草案：长任务工作流
 
 不是所有东西都有 CLI，而且是长任务。需要一个小 runner：
 
@@ -42,7 +58,9 @@ REPLAY 是"缝合怪"：现成的录制、感知、执行部件拿来改，自�
 
 ## v0.3 桌面
 
-- cua-driver 执行（AX 树优先）
+- [x] cua-driver 执行（AX 树优先）；Peekaboo 负责系统对话框
+- 待评估：agent-desktop（Apache-2.0，稳定 ref、执行后核验，本机实测列窗口超时）、Peekaboo 全量（需要录屏权限）
+- 常驻进程：把 Ego 连接和桌面驱动保持住，降低每一步的启动开销
 - 人类演示录制：参考 openadapt-capture / Ghost OS 的 CGEvent tap + AX 记录
 - 网页与桌面步骤混在同一条工作流里（下载 → 本地脚本 → 截图 → 发飞书）
 
